@@ -1,0 +1,12 @@
+# Ignorar la carpeta de dependencias
+node_modules/
+
+# Archivos de configuración local y credenciales
+.env
+
+# Archivos de control de versiones de IDEs
+.vscode/
+.idea/
+
+# Archivos generados por el sistema operativo
+.DS_Store
