@@ -52,22 +52,20 @@ router.get('/disponibilidad_parqueo', async (req, res) => {
   }
 });
 
-
-// Realizar reservaciones de parqueo
+// Realizar reservaciones de parqueo parqueo estudiantes, administrativos
 router.post('/insertar', async (req, res) => {
   const schemaName = 'Desarrolladores';
   let connection;
 
   try {
-    const { RES_ID_USUARIO, JOR_JORNADA_ID, RES_FECHA_INICIO, RES_FECHA_FIN } = req.body;
+    const { RES_ID_USUARIO, JOR_JORNADA_ID} = req.body;
 
     const camposRequeridos = {
       RES_ID_USUARIO: 'Usuario',
       JOR_JORNADA_ID: 'Jornada',
-      RES_FECHA_INICIO: 'Fecha inicio',
-      RES_FECHA_FIN: 'Fecha fin'
     };
 
+    
     const camposFaltantes = Object.entries(camposRequeridos)
       .filter(([key]) => !req.body[key])
       .map(([, value]) => value);
@@ -77,21 +75,6 @@ router.post('/insertar', async (req, res) => {
         error: `Campos requeridos faltantes: ${camposFaltantes.join(', ')}`
       });
     }
-
-    // Validación de formato de fechas
-    const fechaInicio = new Date(RES_FECHA_INICIO);
-    const fechaFin = new Date(RES_FECHA_FIN);
-
-    if (isNaN(fechaInicio) || isNaN(fechaFin)) {
-      return res.status(400).json({ error: 'Formato de fecha inválido' });
-    }
-
-    if (fechaInicio >= fechaFin) {
-      return res.status(400).json({
-        error: 'La fecha de inicio debe ser anterior a la fecha final'
-      });
-    }
-
     connection = await getConnection();
 
     // Validar si la jornada existe y está disponible
@@ -102,21 +85,19 @@ router.post('/insertar', async (req, res) => {
 
     if (jornada.rows.length === 0) {
       await connection.rollback();
-      return res.status(404).json({ error: 'Jornada no encontrada' });
+      return res.status(404).json({ error: 'El número de parqueo seleccionado en la jornada no fue encontrado' });
     }
 
     if (jornada.rows[0][0] !== 1) {
       await connection.rollback();
-      return res.status(409).json({ error: 'Jornada no disponible' });
+      return res.status(409).json({ error: 'Jornada no disponible para el número de parqueo seleccionado o ya fue reservada' });
     }
 
     // Verificar conflictos
     const conflicto = await connection.execute(
       `SELECT 1 FROM ${schemaName}.PAR_RESERVACION 
-      WHERE JOR_JORNADA_ID = :JOR_JORNADA_ID 
-      AND RES_FECHA_INICIO < :RES_FECHA_FIN 
-      AND RES_FECHA_FIN > :RES_FECHA_INICIO`,
-      { JOR_JORNADA_ID, RES_FECHA_INICIO, RES_FECHA_FIN }
+      WHERE JOR_JORNADA_ID = :JOR_JORNADA_ID`,
+      { JOR_JORNADA_ID}
     );
 
     if (conflicto.rows.length > 0) {
@@ -131,16 +112,14 @@ router.post('/insertar', async (req, res) => {
         ERES_ESTADO_ID, RES_FECHA_CREACION, JOR_JORNADA_ID
       ) VALUES (
         :RES_ID_USUARIO, 
-        :RES_FECHA_INICIO, 
-        :RES_FECHA_FIN, 
+        SYSDATE, 
+        LAST_DAY(ADD_MONTHS(TRUNC(SYSDATE, 'YEAR'), 5)), 
         1, 
         SYSDATE, 
         :JOR_JORNADA_ID
       ) RETURNING RES_RESERVACION_ID INTO :RES_ID`,
       {
         RES_ID_USUARIO,
-        RES_FECHA_INICIO: { val: fechaInicio, type: oracledb.DATE },
-        RES_FECHA_FIN: { val: fechaFin, type: oracledb.DATE },
         JOR_JORNADA_ID,
         RES_ID: { type: oracledb.NUMBER, dir: oracledb.BIND_OUT }
       },
@@ -204,4 +183,242 @@ router.post('/insertar', async (req, res) => {
   }
 });
 
+// Realizar reservaciones de parqueo parqueo visitas (marquaje de entrada)
+router.post('/insertar_entrada_visitas', async (req, res) => {
+  const schemaName = 'Desarrolladores';
+  let connection;
+
+  try{
+      const { RES_ID_USUARIO, JOR_JORNADA_ID} = req.body;
+  
+      const camposRequeridos = {
+        RES_ID_USUARIO: 'Usuario',
+        JOR_JORNADA_ID: 'Jornada',
+      };
+      const camposFaltantes = Object.entries(camposRequeridos)
+      .filter(([key]) => !req.body[key])
+      .map(([, value]) => value);
+
+    if (camposFaltantes.length > 0) {
+      return res.status(400).json({
+        error: `Campos requeridos faltantes: ${camposFaltantes.join(', ')}`
+      });
+    }
+    connection = await getConnection();
+
+    // Validar si la jornada existe y está disponible
+    const jornada = await connection.execute(
+      `SELECT EJOR_ESTADO_ID FROM ${schemaName}.PAR_JORNADA WHERE JOR_JORNADA_ID = :JOR_JORNADA_ID`,
+      { JOR_JORNADA_ID }
+    );
+
+    if (jornada.rows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'El número de parqueo seleccionado en la jornada no fue encontrado' });
+    }
+
+    if (jornada.rows[0][0] !== 1) {
+      await connection.rollback();
+      return res.status(409).json({ error: 'Jornada no disponible para el número de parqueo seleccionado o ya fue reservada' });
+    }
+
+       // Insertar registro de entrada con RES_FECHA_ENTRADA (SYSDATE) y sin fecha de salida
+     const result = await connection.execute(
+      `INSERT INTO ${schemaName}.PAR_RESERVACION (
+         RES_ID_USUARIO, RES_FECHA_INICIO, RES_FECHA_FIN, 
+         ERES_ESTADO_ID, RES_FECHA_CREACION, JOR_JORNADA_ID
+       ) VALUES (
+         :RES_ID_USUARIO, 
+         SYSDATE, 
+         NULL, 
+         1, 
+         SYSDATE, 
+         :JOR_JORNADA_ID
+       ) RETURNING RES_RESERVACION_ID INTO :RES_ID`,
+      {
+        RES_ID_USUARIO,
+        JOR_JORNADA_ID,
+        RES_ID: { type: oracledb.NUMBER, dir: oracledb.BIND_OUT }
+      },
+      { autoCommit: false }
+    );
+      
+      const reservacionId = result.outBinds.RES_ID[0];
+
+      // Actualizar estado de jornada
+      const updateResult = await connection.execute(
+        `UPDATE ${schemaName}.PAR_JORNADA 
+         SET EJOR_ESTADO_ID = 2 
+         WHERE JOR_JORNADA_ID = :JOR_JORNADA_ID 
+         AND EJOR_ESTADO_ID = 1`,
+        { JOR_JORNADA_ID },
+        { autoCommit: false }
+      );
+  
+      if (updateResult.rowsAffected === 0) {
+        throw new Error('No se pudo actualizar la jornada. Puede que ya tenga otro estado.');
+      }
+  
+      // Confirmar la transacción
+      await connection.commit();
+  
+      res.status(201).json({
+        success: true,
+        message: 'Reservación creada',
+        data: {
+          id: reservacionId,
+          fecha: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      console.error('Error en reservación:', error);
+  
+      if (connection) await connection.rollback();
+  
+      const response = {
+        success: false,
+        error: 'Error interno en el servidor'
+      };
+  
+      if (process.env.NODE_ENV === 'development') {
+        response.details = {
+          message: error.message,
+          oracleCode: error.errorNum || 'N/A',
+          sql: error.sql || 'N/A'
+        };
+      }
+  
+      res.status(500).json(response);
+    } finally {
+      if (connection) {
+        try {
+          await connection.close();
+        } catch (err) {
+          console.error('Error cerrando conexión:', err);
+        }
+      }
+    }
+  });
+
+  // Liberacion de parqueo visitas (marquaje de salida)
+  router.patch('/insertar_salida_visitas', async (req, res) => {
+    const schemaName = 'Desarrolladores';
+    let connection;
+  
+    try {
+      const { RES_RESERVACION_ID } = req.body;
+      const camposRequeridos = {
+        RES_RESERVACION_ID: 'RES_RESERVACION_ID',
+      };
+      const camposFaltantes = Object.entries(camposRequeridos)
+        .filter(([key]) => !req.body[key])
+        .map(([, value]) => value);
+  
+      if (camposFaltantes.length > 0) {
+        return res.status(400).json({
+          error: `Campos requeridos faltantes: ${camposFaltantes.join(', ')}`
+        });
+      }
+  
+      connection = await getConnection();
+  
+      // Bloquear la reservación para actualizarla de forma segura
+      const reservacion = await connection.execute(
+        `SELECT JOR_JORNADA_ID, ERES_ESTADO_ID 
+         FROM ${schemaName}.PAR_RESERVACION 
+         WHERE RES_RESERVACION_ID = :RES_RESERVACION_ID 
+         FOR UPDATE`,
+        { RES_RESERVACION_ID }
+      );
+  
+      if (reservacion.rows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: 'Reservación no encontrada' });
+      }
+  
+      const [JOR_JORNADA_ID, ERES_ESTADO_ID] = reservacion.rows[0];
+      if (ERES_ESTADO_ID !== 1) {
+        await connection.rollback();
+        return res.status(400).json({ error: 'La reservación no se encuentra en estado abierto' });
+      }
+  
+         // Bloquear la jornada para evitar condiciones de carrera
+      const jornada = await connection.execute(
+        `SELECT EJOR_ESTADO_ID 
+         FROM ${schemaName}.PAR_JORNADA 
+         WHERE JOR_JORNADA_ID = :JOR_JORNADA_ID 
+         FOR UPDATE`,
+        { JOR_JORNADA_ID }
+      );
+  
+      if (jornada.rows.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ error: 'La jornada asociada no fue encontrada' });
+      }
+  
+      // Actualizar el registro de reservación para establecer la fecha de salida
+      const updateReservacionResult = await connection.execute(
+        `UPDATE ${schemaName}.PAR_RESERVACION 
+         SET RES_FECHA_FIN = SYSDATE, ERES_ESTADO_ID = 3 
+         WHERE RES_RESERVACION_ID = :RES_RESERVACION_ID 
+         AND ERES_ESTADO_ID = 1`,
+        { RES_RESERVACION_ID },
+        { autoCommit: false }
+      );
+  
+      if (updateReservacionResult.rowsAffected === 0) {
+        throw new Error('No se encontró reservación abierta para actualizar la salida');
+      }
+  
+      // Actualizar el estado de la jornada para marcar el parqueo como disponible
+      const updateResult = await connection.execute(
+        `UPDATE ${schemaName}.PAR_JORNADA 
+         SET EJOR_ESTADO_ID = 1 
+         WHERE JOR_JORNADA_ID = :JOR_JORNADA_ID 
+         AND EJOR_ESTADO_ID = 2`,
+        { JOR_JORNADA_ID },
+        { autoCommit: false }
+      );
+  
+      if (updateResult.rowsAffected === 0) {
+        throw new Error('No se pudo actualizar la jornada. Puede que ya tenga otro estado.');
+      }
+  
+      // Confirmar la transacción
+      await connection.commit();
+  
+      res.status(200).json({
+        success: true,
+        message: 'Salida registrada y parqueo liberado',
+      });
+    } catch (error) {
+      console.error('Error en la actualización:', error);
+  
+      if (connection) await connection.rollback();
+  
+      const response = {
+        success: false,
+        error: 'Error interno en el servidor'
+      };
+  
+      if (process.env.NODE_ENV === 'development') {
+        response.details = {
+          message: error.message,
+          oracleCode: error.errorNum || 'N/A',
+          sql: error.sql || 'N/A'
+        };
+      }
+  
+      res.status(500).json(response);
+    } finally {
+      if (connection) {
+        try {
+          await connection.close();
+        } catch (err) {
+          console.error('Error cerrando conexión:', err);
+        }
+      }
+    }
+  });
+  
 module.exports = router;
