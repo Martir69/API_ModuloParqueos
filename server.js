@@ -3,21 +3,38 @@ const express = require('express');
 const { initialize, closePool } = require('./database');
 
 const app = express();
+const PORT = process.env.PORT; // Siempre tomarlo del .env
+// Middleware para manejar JSON mal formado
+app.use(express.json(), (err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    console.error('❌ Error de JSON mal formado:', err.message);
+    return res.status(400).json({ success: false, error: 'JSON mal formado' });
+  }
+  next();
+});
 
-//Mandamos a llamar el archivo parqueoRoutes 
-const parqueoRoutes = require('./routes/parqueoRoutes'); 
 
 
-const PORT = process.env.PORT || 3000;
+// Validación de variables de entorno
+if (!PORT) {
+  console.error('Error: La variable de entorno PORT no está definida.');
+  process.exit(1);
+}
+
+if (!process.env.DB_USER || !process.env.DB_PASSWORD || !process.env.DB_CONNECTION) {
+  console.error('Error: Variables de entorno de base de datos no están definidas.');
+  process.exit(1);
+}
 
 app.use(express.json());
-//hacemos uso de la definicion que hicimos arriba
+
+const parqueoRoutes = require('./routes/parqueoRoutes');
 app.use('/api', parqueoRoutes);
 
-// Inicializar la conexión a Oracle antes de iniciar el servidor
+// Inicializar el pool de conexiones y arrancar el servidor
 initialize()
   .then(() => {
-    app.listen(PORT, () => {
+    app.listen(PORT, 'localhost', () => {
       console.log(`Servidor corriendo en http://localhost:${PORT}`);
     });
   })
@@ -26,14 +43,19 @@ initialize()
     process.exit(1);
   });
 
-// Cerrar el pool de conexiones cuando se detenga el servidor
+// Manejar la señal SIGINT para cerrar el pool de conexiones de manera ordenada
 process.on('SIGINT', async () => {
-  await closePool();
-  console.log('Servidor cerrado.');
-  process.exit(0);
+  try {
+    await closePool();
+    console.log('Servidor cerrado.');
+    process.exit(0);
+  } catch (err) {
+    console.error('Error cerrando el pool de conexiones:', err);
+    process.exit(1);
+  }
 });
 
-// Rutas de prueba
+// Ruta de prueba para verificar que el servidor está funcionando
 app.get('/', (req, res) => {
   res.send('Servidor funcionando correctamente');
 });

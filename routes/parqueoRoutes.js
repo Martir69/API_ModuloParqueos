@@ -52,8 +52,8 @@ router.get('/disponibilidad_parqueo', async (req, res) => {
   }
 });
 
-// Realizar reservaciones de parqueo parqueo estudiantes, administrativos
-router.post('/insertar', async (req, res) => {
+// Realizar reservaciones de parqueo estudiantes, administrativos
+router.post('/insertar_parqueo', async (req, res) => {
   const schemaName = 'Desarrolladores';
   let connection;
 
@@ -416,6 +416,113 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
           await connection.close();
         } catch (err) {
           console.error('Error cerrando conexión:', err);
+        }
+      }
+    }
+  });
+
+  // Realizar cancelacion de parqueo estudiantes, administrativos
+  router.patch('/cancelacion_parqueo', async (req, res) => {
+    const schemaName = 'Desarrolladores';
+    let connection;
+  
+    try {
+      // Validar que el cuerpo de la solicitud contenga el ID de la reservación
+      const { RES_RESERVACION_ID } = req.body;
+  
+      if (!RES_RESERVACION_ID) {
+        return res.status(400).json({ error: 'RES_RESERVACION_ID es requerido' });
+      }
+  
+      connection = await getConnection();
+  
+      // Bloquear la reservación para actualizarla de forma segura
+      const reservacion = await connection.execute(
+        `SELECT JOR_JORNADA_ID, ERES_ESTADO_ID 
+         FROM ${schemaName}.PAR_RESERVACION 
+         WHERE RES_RESERVACION_ID = :RES_RESERVACION_ID 
+         FOR UPDATE`,
+        { RES_RESERVACION_ID }
+      );
+  
+      if (!reservacion.rows.length) {
+        return res.status(404).json({ error: 'Reservación no encontrada' });
+      }
+  
+      const [JOR_JORNADA_ID, ERES_ESTADO_ID] = reservacion.rows[0];
+  
+      if (ERES_ESTADO_ID !== 1) {
+        return res.status(400).json({ error: 'La reservación no se puede cancelar porque ya fue cancelada anteriormente' });
+      }
+  
+      // Actualizar la reservación
+      const updateReservacionResult = await connection.execute(
+        `UPDATE ${schemaName}.PAR_RESERVACION 
+         SET ERES_ESTADO_ID = 2 
+         WHERE RES_RESERVACION_ID = :RES_RESERVACION_ID 
+         AND ERES_ESTADO_ID = 1`,
+        { RES_RESERVACION_ID },
+        { autoCommit: false }
+      );
+  
+      if (updateReservacionResult.rowsAffected === 0) {
+        throw new Error('No se encontró reservación abierta para cancelar');
+      }
+  
+      // Liberar el parqueo
+      const updateResult = await connection.execute(
+        `UPDATE ${schemaName}.PAR_JORNADA 
+         SET EJOR_ESTADO_ID = 1 
+         WHERE JOR_JORNADA_ID = :JOR_JORNADA_ID 
+         AND EJOR_ESTADO_ID = 2`,
+        { JOR_JORNADA_ID },
+        { autoCommit: false }
+      );
+  
+      if (updateResult.rowsAffected === 0) {
+        throw new Error('No se pudo actualizar la jornada. Puede que ya tenga otro estado.');
+      }
+  
+      // Confirmar la transacción
+      await connection.commit();
+  
+      res.status(200).json({
+        success: true,
+        message: 'Reservación cancelada y parqueo liberado',
+      });
+  
+    } catch (error) {
+      console.error('Error en la cancelación de parqueo:', error);
+  
+      if (connection) {
+        try {
+          await connection.rollback();
+        } catch (rollbackError) {
+          console.error('Error realizando rollback:', rollbackError);
+        }
+      }
+  
+      const response = {
+        success: false,
+        error: 'Error interno en el servidor',
+      };
+  
+      if (process.env.NODE_ENV === 'development') {
+        response.details = {
+          message: error.message,
+          oracleCode: error.errorNum || 'N/A',
+          sql: error.sql || 'N/A',
+        };
+      }
+  
+      res.status(500).json(response);
+  
+    } finally {
+      if (connection) {
+        try {
+          await connection.close();
+        } catch (closeError) {
+          console.error('Error cerrando la conexión:', closeError);
         }
       }
     }
