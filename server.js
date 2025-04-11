@@ -1,9 +1,21 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const { initialize, closePool } = require('./database');
-
 const app = express();
 const PORT = process.env.PORT; // Siempre tomarlo del .env
+
+
+// Configurar CORS antes de las rutas
+app.use(cors({
+  origin: 'http://localhost:5173', // URL de tu frontend Vite
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+
+
 // Middleware para manejar JSON mal formado
 app.use(express.json(), (err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {

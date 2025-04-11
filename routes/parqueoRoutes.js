@@ -16,10 +16,20 @@ router.get('/disponibilidad_parqueo', async (req, res) => {
     connection = await getConnection(); // Abriendo conexión a la base de datos
 
     const result = await connection.execute(
-      `SELECT PJ.JOR_JORNADA_ID, PP.PAR_NUMERO_PARQUEO, PJ.JOR_TIPO, PJ.EJOR_ESTADO_ID, PP.PAR_SECCION
+      `SELECT 
+         PJ.JOR_JORNADA_ID, 
+         PP.PAR_NUMERO_PARQUEO, 
+         PJ.JOR_TIPO, 
+         PJ.EJOR_ESTADO_ID, 
+         PP.PAR_SECCION,
+         PR.RES_ID_USUARIO,
+         PR.RES_RESERVACION_ID
        FROM PAR_JORNADA PJ
        INNER JOIN PAR_PARQUEO PP ON PJ.PAR_PARQUEO_ID = PP.PAR_PARQUEO_ID
-       WHERE PJ.EJOR_ESTADO_ID = 1 AND PJ.JOR_TIPO = :JOR_TIPO AND PP.PAR_SECCION = :SECCION`,
+       LEFT JOIN PAR_RESERVACION PR ON (
+         PJ.JOR_JORNADA_ID = PR.JOR_JORNADA_ID 
+         AND PR.ERES_ESTADO_ID = 1 )
+       WHERE PJ.JOR_TIPO = :JOR_TIPO AND PP.PAR_SECCION = :SECCION`,
       { JOR_TIPO, SECCION }
     );
 
@@ -28,13 +38,15 @@ router.get('/disponibilidad_parqueo', async (req, res) => {
       return res.status(404).json({ message: 'No se encontraron parqueos disponibles en esta jornada y sección' });
     }
 
-    // Mapeando resultados para devolver en formato JSON
-    const mappedResults = result.rows.map(row => ({
+     // Mapeando resultados para devolver en formato JSON
+     const mappedResults = result.rows.map(row => ({
       JOR_JORNADA_ID: row[0],
       PAR_NUMERO_PARQUEO: row[1],
       JOR_TIPO: row[2],
       EJOR_ESTADO_ID: row[3],
-      PAR_SECCION: row[4]
+      PAR_SECCION: row[4],
+      RES_ID_USUARIO: row[5],
+      RES_RESERVACION_ID: row[6],
     }));
 
     // Enviando los resultados
@@ -100,11 +112,7 @@ router.post('/insertar_parqueo', async (req, res) => {
       { JOR_JORNADA_ID}
     );
 
-    if (conflicto.rows.length > 0) {
-      await connection.rollback();
-      return res.status(409).json({ error: 'Conflicto de horario detectado' });
-    }
-
+   
     // Insertar reservación
     const result = await connection.execute(
       `INSERT INTO ${schemaName}.PAR_RESERVACION (
@@ -310,6 +318,7 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
       const camposRequeridos = {
         RES_RESERVACION_ID: 'RES_RESERVACION_ID',
       };
+  
       const camposFaltantes = Object.entries(camposRequeridos)
         .filter(([key]) => !req.body[key])
         .map(([, value]) => value);
@@ -322,7 +331,6 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
   
       connection = await getConnection();
   
-      // Bloquear la reservación para actualizarla de forma segura
       const reservacion = await connection.execute(
         `SELECT JOR_JORNADA_ID, ERES_ESTADO_ID 
          FROM ${schemaName}.PAR_RESERVACION 
@@ -342,7 +350,6 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
         return res.status(400).json({ error: 'La reservación no se encuentra en estado abierto' });
       }
   
-         // Bloquear la jornada para evitar condiciones de carrera
       const jornada = await connection.execute(
         `SELECT EJOR_ESTADO_ID 
          FROM ${schemaName}.PAR_JORNADA 
@@ -356,7 +363,6 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
         return res.status(404).json({ error: 'La jornada asociada no fue encontrada' });
       }
   
-      // Actualizar el registro de reservación para establecer la fecha de salida
       const updateReservacionResult = await connection.execute(
         `UPDATE ${schemaName}.PAR_RESERVACION 
          SET RES_FECHA_FIN = SYSDATE, ERES_ESTADO_ID = 3 
@@ -370,7 +376,6 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
         throw new Error('No se encontró reservación abierta para actualizar la salida');
       }
   
-      // Actualizar el estado de la jornada para marcar el parqueo como disponible
       const updateResult = await connection.execute(
         `UPDATE ${schemaName}.PAR_JORNADA 
          SET EJOR_ESTADO_ID = 1 
@@ -384,12 +389,37 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
         throw new Error('No se pudo actualizar la jornada. Puede que ya tenga otro estado.');
       }
   
-      // Confirmar la transacción
+      const fechas = await connection.execute(
+        `SELECT RES_FECHA_INICIO, RES_FECHA_FIN 
+         FROM ${schemaName}.PAR_RESERVACION 
+         WHERE RES_RESERVACION_ID = :RES_RESERVACION_ID`,
+        { RES_RESERVACION_ID }
+      );
+  
+      const [RES_FECHA_INICIO, RES_FECHA_FIN] = fechas.rows[0];
+      const diferencia = RES_FECHA_FIN - RES_FECHA_INICIO;
+      const horas = Math.floor(diferencia / 3600000);
+      const minutos = Math.floor((diferencia % 3600000) / 60000);
+      const segundos = Math.floor((diferencia % 60000) / 1000);
+  
+      const duracion = `${horas}h ${minutos}m ${segundos}s`;
+  
+      const usuario = await connection.execute(
+        `SELECT RES_ID_USUARIO 
+         FROM ${schemaName}.PAR_RESERVACION 
+         WHERE RES_RESERVACION_ID = :RES_RESERVACION_ID`,
+        { RES_RESERVACION_ID }
+      );
+  
+      const RES_ID_USUARIO = usuario.rows[0][0];
+  
       await connection.commit();
   
-      res.status(200).json({
+      return res.status(200).json({
         success: true,
         message: 'Salida registrada y parqueo liberado',
+        RES_ID_USUARIO,
+        TIEMPO_TOTAL: duracion
       });
     } catch (error) {
       console.error('Error en la actualización:', error);
@@ -409,7 +439,7 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
         };
       }
   
-      res.status(500).json(response);
+      return res.status(500).json(response);
     } finally {
       if (connection) {
         try {
@@ -420,6 +450,9 @@ router.post('/insertar_entrada_visitas', async (req, res) => {
       }
     }
   });
+  
+
+
 
   // Realizar cancelacion de parqueo estudiantes, administrativos
   router.patch('/cancelacion_parqueo', async (req, res) => {
